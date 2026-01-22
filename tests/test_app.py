@@ -25,6 +25,7 @@ def test_post_event_creates_session():
         assert len(sessions) == 1
         assert sessions[0]["session_id"] == "abc123"
         assert sessions[0]["status"] == "running"
+        assert sessions[0]["provider"] == "claude"
 
         db.close()
 
@@ -208,5 +209,44 @@ def test_git_branch_stored_and_returned():
 
         sessions = client.get("/sessions").json()
         assert sessions[0]["git_branch"] == "feature/test"
+
+        db.close()
+
+
+def test_codex_agent_message_sets_awaiting_input():
+    with tempfile.TemporaryDirectory() as tmpdir:
+        db = Database(Path(tmpdir) / "test.db")
+        app = create_app(db)
+        client = TestClient(app)
+
+        client.post("/events", json={
+            "session_id": "abc123",
+            "project_path": "/path/to/project",
+            "event_type": "agent_message",
+            "provider": "codex",
+        })
+
+        sessions = client.get("/sessions").json()
+        assert sessions[0]["status"] == "awaiting_input"
+        assert sessions[0]["provider"] == "codex"
+
+        db.close()
+
+
+def test_codex_review_mode_sets_awaiting_approval():
+    with tempfile.TemporaryDirectory() as tmpdir:
+        db = Database(Path(tmpdir) / "test.db")
+        app = create_app(db)
+        client = TestClient(app)
+
+        client.post("/events", json={
+            "session_id": "abc123",
+            "project_path": "/path/to/project",
+            "event_type": "review_mode",
+            "provider": "codex",
+        })
+
+        sessions = client.get("/sessions").json()
+        assert sessions[0]["status"] == "awaiting_approval"
 
         db.close()

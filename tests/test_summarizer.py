@@ -205,3 +205,30 @@ class TestSummarizeSession:
                 call_args = mock_client.messages.create.call_args
                 assert call_args.kwargs["model"] == "claude-3-5-haiku-latest"
                 assert call_args.kwargs["max_tokens"] == 30
+
+    def test_parses_codex_messages(self, tmp_path):
+        transcript = tmp_path / "codex.jsonl"
+        transcript.write_text(
+            '{"type": "session_meta", "payload": {"id": "abc", "cwd": "/tmp"}}\n'
+            '{"type": "event_msg", "payload": {"type": "user_message", "message": "please help"}}\n'
+            '{"type": "response_item", "payload": {"type": "function_call", "name": "shell_command"}}\n'
+            '{"type": "event_msg", "payload": {"type": "agent_message", "message": "working on it"}}\n'
+        )
+
+        mock_response = MagicMock()
+        mock_response.content = [MagicMock(text="Codex summary")]
+
+        with patch("plate_spinner.daemon.summarizer.get_api_key", return_value="sk-test"):
+            with patch("plate_spinner.daemon.summarizer.Anthropic") as mock_anthropic:
+                mock_client = MagicMock()
+                mock_client.messages.create.return_value = mock_response
+                mock_anthropic.return_value = mock_client
+
+                result = summarize_session(str(transcript))
+
+                assert result == "Codex summary"
+                call_args = mock_client.messages.create.call_args
+                prompt = call_args.kwargs["messages"][0]["content"]
+                assert "User: please help" in prompt
+                assert "Assistant: working on it" in prompt
+                assert "Tool: shell_command" in prompt

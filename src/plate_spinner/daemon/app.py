@@ -16,6 +16,13 @@ def _determine_status(event: HookEvent) -> SessionStatus:
         return SessionStatus.ERROR if event.error else SessionStatus.CLOSED
     if event.event_type in ("session_start", "tool_start"):
         return SessionStatus.RUNNING
+    if event.provider == "codex":
+        if event.event_type == "agent_message":
+            return SessionStatus.AWAITING_INPUT
+        if event.event_type == "review_mode":
+            return SessionStatus.AWAITING_APPROVAL
+        if event.event_type in ("user_message", "review_mode_exit"):
+            return SessionStatus.RUNNING
     return SessionStatus.from_tool(event.tool_name or "")
 
 
@@ -25,16 +32,18 @@ def _upsert_session(db: Database, event: HookEvent, status: SessionStatus, now: 
         (event.session_id,)
     ).fetchone()
 
+    provider = event.provider or "claude"
+
     if not existing:
         placeholder_id = f"pending:{event.project_path}"
         db.execute("DELETE FROM sessions WHERE session_id = ?", (placeholder_id,))
         db.execute(
             """INSERT INTO sessions
-               (session_id, project_path, transcript_path, git_branch, status,
+               (session_id, project_path, transcript_path, git_branch, provider, status,
                 last_event_type, last_tool, created_at, updated_at)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             (event.session_id, event.project_path,
-             event.transcript_path, event.git_branch, status.value, event.event_type, event.tool_name, now, now)
+             event.transcript_path, event.git_branch, provider, status.value, event.event_type, event.tool_name, now, now)
         )
     else:
         db.execute(
@@ -43,10 +52,11 @@ def _upsert_session(db: Database, event: HookEvent, status: SessionStatus, now: 
                last_tool = COALESCE(?, last_tool),
                transcript_path = COALESCE(?, transcript_path),
                git_branch = COALESCE(?, git_branch),
+               provider = COALESCE(?, provider),
                updated_at = ?
                WHERE session_id = ?""",
             (status.value, event.event_type, event.tool_name,
-             event.transcript_path, event.git_branch, now, event.session_id)
+             event.transcript_path, event.git_branch, event.provider, now, event.session_id)
         )
     return existing is not None
 
@@ -102,6 +112,7 @@ def _maybe_summarize(db: Database, event: HookEvent, status: SessionStatus) -> N
 
 class RegisterRequest(BaseModel):
     project_path: str
+    provider: str | None = None
 
 
 class ConnectionManager:
@@ -176,9 +187,9 @@ def create_app(db: Database) -> FastAPI:
         if not existing:
             db.execute(
                 """INSERT INTO sessions
-                   (session_id, project_path, status, created_at, updated_at)
-                   VALUES (?, ?, ?, ?, ?)""",
-                (placeholder_id, req.project_path, "starting", now, now)
+                   (session_id, project_path, provider, status, created_at, updated_at)
+                   VALUES (?, ?, ?, ?, ?, ?)""",
+                (placeholder_id, req.project_path, req.provider or "claude", "starting", now, now)
             )
             db.commit()
             await manager.broadcast({"type": "session_update", "session_id": placeholder_id})
@@ -208,7 +219,7 @@ def create_app(db: Database) -> FastAPI:
     @app.get("/sessions")
     async def get_sessions() -> list[dict]:
         rows = db.execute(
-            """SELECT s.session_id, s.project_path, s.git_branch, s.status,
+            """SELECT s.session_id, s.project_path, s.git_branch, s.provider, s.status,
                       s.last_event_type, s.last_tool, s.summary, s.created_at, s.updated_at,
                       t.todos_json
                FROM sessions s

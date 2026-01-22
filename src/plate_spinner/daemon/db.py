@@ -7,6 +7,7 @@ CREATE TABLE IF NOT EXISTS sessions (
     project_path TEXT NOT NULL,
     transcript_path TEXT,
     git_branch TEXT,
+    provider TEXT NOT NULL DEFAULT 'claude',
     status TEXT NOT NULL DEFAULT 'running',
     last_event_type TEXT,
     last_tool TEXT,
@@ -56,6 +57,8 @@ class Database:
             self.conn.execute("ALTER TABLE sessions ADD COLUMN transcript_path TEXT")
         if "git_branch" not in columns:
             self.conn.execute("ALTER TABLE sessions ADD COLUMN git_branch TEXT")
+        if "provider" not in columns:
+            self.conn.execute("ALTER TABLE sessions ADD COLUMN provider TEXT DEFAULT 'claude'")
 
     def execute(self, sql: str, params: tuple = ()) -> sqlite3.Cursor:
         return self.conn.execute(sql, params)

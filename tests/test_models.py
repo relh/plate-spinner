@@ -7,10 +7,12 @@ def test_hook_event_from_dict():
         "project_path": "/path/to/project",
         "event_type": "tool_call",
         "tool_name": "AskUserQuestion",
+        "provider": "codex",
     }
     event = HookEvent(**data)
     assert event.session_id == "abc123"
     assert event.tool_name == "AskUserQuestion"
+    assert event.provider == "codex"
 
 
 def test_session_status_from_tool():

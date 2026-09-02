@@ -10,6 +10,7 @@ sp install              # Install hooks, prints config to add to ~/.claude/setti
 sp                      # Open dashboard (terminal 1)
 sp run                  # Start tracked session (terminal 2)
 sp run                  # Start another (terminal 3)
+sp codex                # Start tracked Codex session (terminal 4)
 ```
 
 ## Usage
@@ -48,6 +49,7 @@ The dashboard shows warnings if hooks are outdated or `ANTHROPIC_API_KEY` is not
 ```
 sp              Dashboard (auto-starts daemon)
 sp run [args]   Launch Claude with tracking
+sp codex [args] Launch Codex with tracking
 sp install      Install/update hooks, print settings config
 sp kill         Stop daemon
 sp sessions     List sessions as JSON
@@ -74,4 +76,5 @@ Daemon (SQLite + WebSocket) --> TUI
 
 - Python 3.11+
 - Claude Code
+- Codex CLI (optional, for `sp codex`)
 - `ANTHROPIC_API_KEY` (optional, enables summaries)

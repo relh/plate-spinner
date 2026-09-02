@@ -30,6 +30,7 @@ class HookEvent(BaseModel):
     tool_params: dict | None = None
     transcript_path: str | None = None
     git_branch: str | None = None
+    provider: str | None = None
     error: str | None = None
     timestamp: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
 
@@ -50,6 +51,7 @@ class HookEvent(BaseModel):
 class Session(BaseModel):
     session_id: str
     project_path: str
+    provider: str | None = None
     status: SessionStatus = SessionStatus.RUNNING
     last_event_type: str | None = None
     last_tool: str | None = None

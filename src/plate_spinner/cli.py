@@ -4,6 +4,7 @@ import os
 import signal
 import subprocess
 import sys
+import threading
 import time
 from pathlib import Path
 
@@ -12,6 +13,15 @@ import uvicorn
 
 from .daemon.app import create_app
 from .daemon.db import Database
+from .codex import (
+    CODEX_SESSIONS_DIR,
+    CODEX_PROVIDER,
+    CodexSessionInfo,
+    find_codex_session,
+    post_session_start,
+    post_session_stop,
+    tail_codex_session,
+)
 
 DAEMON_PORT = 7890
 DAEMON_URL = f"http://localhost:{DAEMON_PORT}"
@@ -61,7 +71,11 @@ def cmd_tui(args: argparse.Namespace) -> None:
             os.chdir(project_path)
         env = os.environ.copy()
         env["PLATE_SPINNER"] = "1"
-        os.execvpe("claude", ["claude", "--resume", session_id], env)
+        provider = _resolve_session_provider(session_id)
+        if provider == CODEX_PROVIDER and project_path:
+            os.execvpe("codex", ["codex", "resume", "-C", project_path, session_id], env)
+        else:
+            os.execvpe("claude", ["claude", "--resume", session_id], env)
 
 
 def _notify_stopped(project_path: str) -> None:
@@ -73,6 +87,17 @@ def _notify_stopped(project_path: str) -> None:
         )
     except httpx.RequestError:
         pass
+
+
+def _resolve_session_provider(session_id: str) -> str | None:
+    try:
+        response = httpx.get(f"{DAEMON_URL}/sessions", timeout=2)
+        for session in response.json():
+            if session.get("session_id") == session_id:
+                return session.get("provider") or "claude"
+    except httpx.RequestError:
+        return None
+    return None
 
 
 def cmd_run(args: argparse.Namespace) -> None:
@@ -103,6 +128,68 @@ def cmd_run(args: argparse.Namespace) -> None:
         except ChildProcessError:
             pass
         _notify_stopped(project_path)
+
+
+def _wait_for_codex_session(start_time: float, existing_paths: set[Path]) -> CodexSessionInfo | None:
+    return find_codex_session(start_time=start_time, existing_paths=existing_paths)
+
+
+def cmd_codex(args: argparse.Namespace) -> None:
+    _ensure_daemon_running()
+    env = os.environ.copy()
+    env["PLATE_SPINNER"] = "1"
+
+    codex_args = getattr(args, "codex_args", [])
+    if CODEX_SESSIONS_DIR.exists():
+        existing_paths = {path for path in CODEX_SESSIONS_DIR.rglob("*.jsonl")}
+    else:
+        existing_paths = set()
+
+    start_time = time.time()
+
+    pid = os.fork()
+    if pid == 0:
+        os.execvpe("codex", ["codex"] + codex_args, env)
+    else:
+        stop_event = threading.Event()
+        session_info: CodexSessionInfo | None = None
+
+        def cleanup(_sig: int, _frame: object) -> None:
+            stop_event.set()
+            try:
+                os.kill(pid, signal.SIGTERM)
+            except ProcessLookupError:
+                pass
+            if session_info:
+                post_session_stop(DAEMON_URL, session_info.session_id, session_info.project_path)
+            else:
+                _notify_stopped(os.getcwd())
+            sys.exit(0)
+
+        signal.signal(signal.SIGHUP, cleanup)
+        signal.signal(signal.SIGTERM, cleanup)
+        signal.signal(signal.SIGINT, cleanup)
+
+        session_info = _wait_for_codex_session(start_time, existing_paths)
+        if session_info:
+            post_session_start(DAEMON_URL, session_info)
+            tail_thread = threading.Thread(
+                target=tail_codex_session,
+                args=(DAEMON_URL, session_info, stop_event.is_set),
+                daemon=True,
+            )
+            tail_thread.start()
+
+        try:
+            os.waitpid(pid, 0)
+        except ChildProcessError:
+            pass
+
+        stop_event.set()
+        if session_info:
+            post_session_stop(DAEMON_URL, session_info.session_id, session_info.project_path)
+        else:
+            _notify_stopped(os.getcwd())
 
 
 def cmd_sessions(args: argparse.Namespace) -> None:
@@ -204,6 +291,10 @@ def main() -> None:
         args = argparse.Namespace(claude_args=sys.argv[2:])
         cmd_run(args)
         return
+    if len(sys.argv) >= 2 and sys.argv[1] == "codex":
+        args = argparse.Namespace(codex_args=sys.argv[2:])
+        cmd_codex(args)
+        return
 
     parser = argparse.ArgumentParser(prog="sp", description="Plate-Spinner")
     subparsers = parser.add_subparsers(dest="command")
@@ -214,6 +305,7 @@ def main() -> None:
     subparsers.add_parser("install", help="Install hooks to ~/.plate-spinner")
     subparsers.add_parser("kill", help="Stop the daemon")
     subparsers.add_parser("run", help="Launch Claude with tracking (all args passed to claude)")
+    subparsers.add_parser("codex", help="Launch Codex with tracking (all args passed to codex)")
 
     config_parser = subparsers.add_parser("config", help="Manage configuration")
     config_subparsers = config_parser.add_subparsers(dest="config_command")
@@ -232,6 +324,8 @@ def main() -> None:
         cmd_install(args)
     elif args.command == "kill":
         cmd_kill(args)
+    elif args.command == "codex":
+        cmd_codex(args)
     elif args.command == "config":
         cmd_config(args)
     else:
